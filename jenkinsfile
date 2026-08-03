@@ -1,0 +1,77 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_ACCOUNT_ID = "your-account-id"
+        AWS_REGION = "ap-south-1"
+        ECR_REPO = "my-app"
+        IMAGE_TAG = "latest"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git 'https://github.com/your-username/your-repo.git'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'npm install'
+                sh 'npm run build'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'sonar-scanner'
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                waitForQualityGate abortPipeline: true
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                sh 'trivy fs .'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh 'docker build -t $ECR_REPO:$IMAGE_TAG .'
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh '''
+                aws ecr get-login-password --region $AWS_REGION | \
+                docker login --username AWS --password-stdin \
+                $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+                docker tag $ECR_REPO:$IMAGE_TAG \
+                $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+
+                docker push \
+                $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                sh '''
+                aws eks --region $AWS_REGION update-kubeconfig --name my-eks-cluster
+                kubectl apply -f k8s/
+                '''
+            }
+        }
+    }
+}
